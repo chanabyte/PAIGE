@@ -1,0 +1,10 @@
+# Python (pip) dependencies
+#
+# Install with:
+#   python3 -m pip install -r requirements.txt
+#
+# Note: audio capture uses the system tool `arecord` (ALSA).
+# On Raspberry Pi OS install it via:
+#   sudo apt-get install -y alsa-utils
+
+gpiozero
