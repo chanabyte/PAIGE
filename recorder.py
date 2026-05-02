@@ -2,25 +2,36 @@
 recorder.py — audio capture logic only.
 Exposes start(), stop(), is_recording(), list_recordings().
 GPIO/button handling lives in app.py.
+Keeps at most MAX_RECORDINGS files, deleting the oldest on each new recording.
 """
 
 import signal
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
-PW_TARGET  = "90"
-OUTPUT_DIR = Path("./Recordings")
+PW_TARGET      = "90"
+OUTPUT_DIR     = Path("./Recordings")
+MAX_RECORDINGS = 3
+FILE_PREFIX    = "UserAudio"
+
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 _proc         = None
 _current_file = None
 
 
+def _next_path() -> Path:
+    existing = sorted(OUTPUT_DIR.glob(f"{FILE_PREFIX}_*.wav"))
+    while len(existing) >= MAX_RECORDINGS:
+        existing.pop(0).unlink()
+        existing = sorted(OUTPUT_DIR.glob(f"{FILE_PREFIX}_*.wav"))
+    next_num = int(existing[-1].stem.split("_")[-1]) + 1 if existing else 1
+    return OUTPUT_DIR / f"{FILE_PREFIX}_{next_num:03d}.wav"
+
+
 def start() -> Path:
     global _proc, _current_file
-    timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _current_file = OUTPUT_DIR / f"recording_{timestamp}.wav"
+    _current_file = _next_path()
     print(f"[REC] Starting → {_current_file}")
     _proc = subprocess.Popen(["pw-record", "--target", PW_TARGET, str(_current_file)])
     return _current_file
