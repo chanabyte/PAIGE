@@ -2,3 +2,4 @@ Recordings
 venv
 .lgd-nfy0
 test
+__pycache__

@@ -1,78 +1,48 @@
 """
-recorder.py — GPIO button-controlled audio recorder (PipeWire)
-Press once to start, press again to stop and save.
-
-Prereqs:
-    pip install gpiozero
-
-Wiring:
-    Button: GPIO17 (BCM) → GND  (uses internal pull-up)
-
-Usage:
-    python recorder.py
+recorder.py — audio capture logic only.
+Exposes start(), stop(), is_recording(), list_recordings().
+GPIO/button handling lives in app.py.
 """
 
-import subprocess
 import signal
-from pathlib import Path
+import subprocess
 from datetime import datetime
-from gpiozero import Button
+from pathlib import Path
 
-# ── Config ────────────────────────────────────────────────────────────────────
-GPIO_PIN      = 17      # BCM pin number
-PW_TARGET     = "90"    # pw-record target ID (your Boult mic)
-OUTPUT_DIR    = Path("./Recordings")
-# ─────────────────────────────────────────────────────────────────────────────
-
+PW_TARGET  = "90"
+OUTPUT_DIR = Path("./Recordings")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-recording_process = None
-current_file      = None
+_proc         = None
+_current_file = None
 
 
-def start_recording():
-    global recording_process, current_file
-    timestamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_file = OUTPUT_DIR / f"recording_{timestamp}.wav"
-
-    print(f"[REC] Starting → {current_file}")
-    recording_process = subprocess.Popen([
-        "pw-record",
-        "--target", PW_TARGET,
-        str(current_file),
-    ])
+def start() -> Path:
+    global _proc, _current_file
+    timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _current_file = OUTPUT_DIR / f"recording_{timestamp}.wav"
+    print(f"[REC] Starting → {_current_file}")
+    _proc = subprocess.Popen(["pw-record", "--target", PW_TARGET, str(_current_file)])
+    return _current_file
 
 
-def stop_recording():
-    global recording_process, current_file
-    if recording_process is None:
-        return
+def stop() -> Path | None:
+    global _proc, _current_file
+    if _proc is None:
+        return None
     print("[REC] Stopping — saving file...")
-    recording_process.send_signal(signal.SIGINT)
-    recording_process.wait()
-    recording_process = None
-    print(f"[REC] Saved → {current_file}")
-    current_file = None
+    _proc.send_signal(signal.SIGINT)
+    _proc.wait()
+    saved  = _current_file
+    _proc  = None
+    _current_file = None
+    print(f"[REC] Saved → {saved}")
+    return saved
 
 
-def on_button_press():
-    if recording_process is None:
-        start_recording()
-    else:
-        stop_recording()
+def is_recording() -> bool:
+    return _proc is not None
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-button = Button(GPIO_PIN, pull_up=True, bounce_time=0.05)
-button.when_pressed = on_button_press
-
-print(f"Ready. Button on GPIO{GPIO_PIN}.")
-print(f"Saving to: {OUTPUT_DIR.resolve()}")
-print("Press button to start/stop. Ctrl+C to quit.\n")
-
-try:
-    signal.pause()
-except KeyboardInterrupt:
-    if recording_process:
-        stop_recording()
-    print("\nExiting.")
+def list_recordings() -> list[Path]:
+    return sorted(OUTPUT_DIR.glob("*.wav"), reverse=True)
