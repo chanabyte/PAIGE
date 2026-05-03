@@ -16,8 +16,7 @@ app = Flask(__name__)
 
 
 def _send_to_ai(wav_path):
-    response = ai.process(wav_path)
-    print(f"\n[AI] {response}\n")
+    ai.process(wav_path)
 
 
 def on_button_press():

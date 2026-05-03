@@ -4,10 +4,10 @@ Uploads a wav file, waits for a response, returns the text.
 """
 
 import os
+import re
+import subprocess
 import time
 from pathlib import Path
-
-import subprocess
 
 from dotenv import load_dotenv
 from google import genai
@@ -17,8 +17,16 @@ _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 _MODEL  = "gemini-2.5-flash"
 
 
+def _clean(text: str) -> str:
+    text = re.sub(r'\*+', '', text)
+    text = re.sub(r'#+\s*', '', text)
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*[-•]\s+', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+
 def _speak(text: str) -> None:
-    subprocess.run(["espeak-ng", text], check=False)
+    subprocess.run(["espeak-ng", "-s", "130", _clean(text)], check=False)
 
 
 def process(wav_path: Path) -> str:
@@ -49,7 +57,13 @@ def process(wav_path: Path) -> str:
     text = response.text
     print(f"\n[AI] {text}\n")
 
-    spoken = text.split("Response:", 1)[1].strip() if "Response:" in text else text
-    _speak(spoken)
+    parts = []
+    if "To summarize:" in text:
+        summary = text.split("To summarize:", 1)[1]
+        summary = summary.split("Response:", 1)[0] if "Response:" in summary else summary
+        parts.append("To summarize: " + summary.strip())
+    if "Response:" in text:
+        parts.append("Response: " + text.split("Response:", 1)[1].strip())
 
+    _speak(" ".join(parts) if parts else text)
     return text
