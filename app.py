@@ -4,18 +4,27 @@ Button press toggles recording via recorder.py.
 """
 
 import signal
+import threading
 from flask import Flask, jsonify
 from gpiozero import Button
 import recorder
+import ai
 
 GPIO_PIN = 17
 
 app = Flask(__name__)
 
 
+def _send_to_ai(wav_path):
+    response = ai.process(wav_path)
+    print(f"\n[AI] {response}\n")
+
+
 def on_button_press():
     if recorder.is_recording():
-        recorder.stop()
+        saved = recorder.stop()
+        if saved:
+            threading.Thread(target=_send_to_ai, args=(saved,), daemon=True).start()
     else:
         recorder.start()
 
