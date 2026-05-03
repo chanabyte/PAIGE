@@ -9,11 +9,9 @@ import signal
 import subprocess
 from pathlib import Path
 
-PW_TARGET      = "90"
-OUTPUT_DIR     = Path("./Recordings")
-MAX_RECORDINGS = 3
-FILE_PREFIX    = "UserAudio"
+import config
 
+OUTPUT_DIR = Path("./Recordings")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 _proc         = None
@@ -21,19 +19,19 @@ _current_file = None
 
 
 def _next_path() -> Path:
-    existing = sorted(OUTPUT_DIR.glob(f"{FILE_PREFIX}_*.wav"))
-    while len(existing) >= MAX_RECORDINGS:
+    existing = sorted(OUTPUT_DIR.glob(f"{config.FILE_PREFIX}_*.wav"))
+    while len(existing) >= config.MAX_RECORDINGS:
         existing.pop(0).unlink()
-        existing = sorted(OUTPUT_DIR.glob(f"{FILE_PREFIX}_*.wav"))
+        existing = sorted(OUTPUT_DIR.glob(f"{config.FILE_PREFIX}_*.wav"))
     next_num = int(existing[-1].stem.split("_")[-1]) + 1 if existing else 1
-    return OUTPUT_DIR / f"{FILE_PREFIX}_{next_num:03d}.wav"
+    return OUTPUT_DIR / f"{config.FILE_PREFIX}_{next_num:03d}.wav"
 
 
 def start() -> Path:
     global _proc, _current_file
     _current_file = _next_path()
     print(f"[REC] Starting → {_current_file}")
-    _proc = subprocess.Popen(["pw-record", "--target", PW_TARGET, str(_current_file)])
+    _proc = subprocess.Popen(["pw-record", "--target", config.PW_TARGET, str(_current_file)])
     return _current_file
 
 

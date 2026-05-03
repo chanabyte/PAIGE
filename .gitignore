@@ -2,5 +2,5 @@ Recordings
 venv
 .lgd-nfy0
 test
-__pycache__
+**/__pycache__/
 .env

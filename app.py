@@ -7,10 +7,9 @@ import signal
 import threading
 from flask import Flask, jsonify
 from gpiozero import Button
-import recorder
-import ai
-
-GPIO_PIN = 17
+import config
+import Audio.recorder as recorder
+import Gemini.ai as ai
 
 app = Flask(__name__)
 
@@ -28,7 +27,7 @@ def on_button_press():
         recorder.start()
 
 
-button = Button(GPIO_PIN, pull_up=True, bounce_time=0.05)
+button = Button(config.GPIO_PIN, pull_up=True, bounce_time=0.05)
 button.when_pressed = on_button_press
 
 
@@ -44,7 +43,7 @@ def recordings():
 
 
 if __name__ == "__main__":
-    print(f"PAIGE ready. Button on GPIO{GPIO_PIN}.")
+    print(f"PAIGE ready. Button on GPIO{config.GPIO_PIN}.")
     try:
         app.run(host="0.0.0.0", port=5000)
     except KeyboardInterrupt:

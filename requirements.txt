@@ -11,3 +11,5 @@ flask
 gpiozero
 google-genai
 python-dotenv
+edge-tts
+requests
