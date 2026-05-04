@@ -4,3 +4,10 @@ venv
 test
 **/__pycache__/
 .env
+
+# Google OAuth (Calendar, etc.)
+tokens.json
+token.json
+credentials.json
+client_secret*.json
+tokens.json

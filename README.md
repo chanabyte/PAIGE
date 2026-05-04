@@ -16,6 +16,26 @@ Add your Gemini API key to `.env`:
 GEMINI_API_KEY=your_key_here
 ```
 
+## Google Calendar (Headless Sign-In)
+
+PAIGE supports a single active Google user via an OAuth **limited-input device flow**.
+This works without a monitor: PAIGE will give you a URL + code to enter on your phone.
+
+1) Create an OAuth client ID in Google Cloud Console that supports limited-input devices.
+
+2) Add to `.env`:
+```
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...  # optional
+```
+
+3) Ask PAIGE to connect:
+- Say something like: "connect my calendar"
+- Follow the URL + code on your phone
+- Then ask again (or ask for events): "what's on my calendar?"
+
+To sign out: "disconnect my calendar"
+
 ## Run
 
 ```bash
