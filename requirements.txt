@@ -13,3 +13,5 @@ google-genai
 python-dotenv
 edge-tts
 requests
+Pillow
+numpy

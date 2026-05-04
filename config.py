@@ -17,6 +17,7 @@ FILE_PREFIX    = "UserAudio"
 GEMINI_MODEL = "gemini-2.5-flash"
 VOICE        = "en-GB-SoniaNeural"
 
-# ── Display (ILI9481 3.5" TFT LCD) ───────────────────────────────────────────
+# ── Display (Inland TFT35 HAT — fb_ili9486) ──────────────────────────────────
 DISPLAY_WIDTH  = 480
 DISPLAY_HEIGHT = 320
+DISPLAY_FB     = "/dev/fb2"
