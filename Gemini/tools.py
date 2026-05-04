@@ -55,6 +55,14 @@ def get_calendar_events(max_results: int = 5) -> dict:
         return {"error": str(e)}
 
 
+def create_calendar_event(title: str, description: str = "", hours_from_now: float = 1.0) -> dict:
+    """Create an event on the user's primary Google Calendar."""
+    try:
+        return calendar_api.create_event(title, description, hours_from_now)
+    except Exception as e:
+        return {"error": str(e)}
+
+
 TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -98,6 +106,28 @@ TOOL = types.Tool(
                 required=[],
             ),
         ),
+        types.FunctionDeclaration(
+            name="create_calendar_event",
+            description="Create a new event on the user's primary Google Calendar.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "title": types.Schema(
+                        type="STRING",
+                        description="Event title (required).",
+                    ),
+                    "description": types.Schema(
+                        type="STRING",
+                        description="Event description (optional).",
+                    ),
+                    "hours_from_now": types.Schema(
+                        type="NUMBER",
+                        description="Hours from now to schedule the event (default: 1.0).",
+                    ),
+                },
+                required=["title"],
+            ),
+        ),
     ]
 )
 
@@ -106,4 +136,5 @@ FUNCTIONS = {
     "connect_calendar": connect_calendar,
     "disconnect_calendar": disconnect_calendar,
     "get_calendar_events": get_calendar_events,
+    "create_calendar_event": create_calendar_event,
 }

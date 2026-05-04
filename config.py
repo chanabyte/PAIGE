@@ -20,3 +20,4 @@ VOICE        = "en-GB-SoniaNeural"
 # ── Display (ILI9481 3.5" TFT LCD) ───────────────────────────────────────────
 DISPLAY_WIDTH  = 480
 DISPLAY_HEIGHT = 320
+DISPLAY_FB     = "/dev/fb2"

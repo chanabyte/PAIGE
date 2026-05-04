@@ -27,6 +27,9 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 _DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
@@ -396,3 +399,45 @@ def list_upcoming_events(max_results: int = 5) -> dict:
         )
 
     return {"status": "ok", "events": items}
+
+
+def create_event(title: str, description: str = "", hours_from_now: float = 1.0) -> dict:
+    """Create an event on the user's primary calendar.
+
+    Args:
+        title: Event title
+        description: Event description (optional)
+        hours_from_now: How many hours from now to schedule the event (default: 1)
+    """
+    cfg = load_config()
+    access_token = _get_bearer_token(cfg)
+
+    now = _utc_now()
+    start_time = now + timedelta(hours=hours_from_now)
+    end_time = start_time + timedelta(hours=1)
+
+    event = {
+        "summary": title,
+        "description": description,
+        "start": {"dateTime": start_time.isoformat()},
+        "end": {"dateTime": end_time.isoformat()},
+    }
+
+    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    resp = requests.post(
+        url,
+        json=event,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    data = resp.json()
+
+    if resp.status_code not in (200, 201):
+        return {"error": data}
+
+    return {
+        "status": "created",
+        "event_id": data.get("id"),
+        "title": data.get("summary"),
+        "start": (data.get("start") or {}).get("dateTime"),
+    }
