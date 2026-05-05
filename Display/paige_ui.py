@@ -334,6 +334,12 @@ def _draw_recording_strip() -> None:
             _draw_text(suffix[-2:], x + 58, y + 17, WHITE, scale=1)
 
 
+def _advance_selection(index: int, count: int) -> int:
+    if count <= 0:
+        return 0
+    return (index + 1) % count
+
+
 
 # ── State ──────────────────────────────────────────────────────────────────────
 GPIO_RECORD = 4
@@ -341,8 +347,16 @@ GPIO_NEXT   = 27
 GPIO_PREV   = 22
 GPIO_ACTION = 18
 GPIO_HOME   = 23
+GPIO_NAV = 14
 
-PAGES = ["home", "calendar", "pomodoro_select"]
+PAGES = ["home", "voice_notes", "calendar", "pomodoro_select", "stress_level"]
+
+STRESS_LEVELS = [
+    {"label": "Low",         "color": GREEN,  "tip": "Doing great  keep it up!"},
+    {"label": "Moderate",    "color": YELLOW, "tip": "Take a short break soon"},
+    {"label": "High",        "color": ORANGE, "tip": "Try a Pomodoro session"},
+    {"label": "Overwhelmed", "color": RED,    "tip": "Step away and breathe"},
+]
 
 POMODORO_PRESETS = [
     {"name": "Classic",   "work": 25, "break": 5,  "reps": 4},
@@ -364,14 +378,18 @@ _state = {
     # Calendar page
     "cal_events": [],
     "cal_scroll": 0,
+    "cal_selected": 0,
     "cal_loading": False,
     # Pomodoro
     "pomo_preset": 0,
     "pomo_phase": "work",   # "work" | "break" | "done"
     "pomo_rep": 1,
     "pomo_end": None,
+    # Stress level page
+    "stress_level": 1,
 }
 
+_recording_as_note = False   # True when record was pressed on voice_notes page
 _lock = threading.Lock()
 
 
@@ -384,7 +402,7 @@ def _screen_home() -> None:
     _draw_text(now.strftime("%A  %d %b %Y"), W // 2, 196, GRAY, scale=2)
     _fill(40, 218, W - 80, 1, DGRAY)
     _draw_text("PAIGE", W // 2, 246, TEAL, scale=2)
-    status = _state["status"] or "27 calendar  24 record  23 home"
+    status = _state["status"] or "27/22 pages  24 record  25 browse"
     _draw_text(status[:36], W // 2, 295, DGRAY, scale=1)
 
 
@@ -497,54 +515,88 @@ def _screen_events() -> None:
     _draw_text("press button to dismiss", W // 2, 305, DGRAY, scale=1)
 
 
+def _cycle_next_recording() -> None:
+    _sync_recordings()
+    with _lock:
+        recordings = _state["recordings"]
+        if not recordings:
+            return
+        _state["selected_recording"] = _advance_selection(_state["selected_recording"], len(recordings))
+
+
+def _cycle_selected_calendar_event() -> None:
+    with _lock:
+        events = _state["cal_events"]
+        if not events:
+            return
+        _state["cal_selected"] = _advance_selection(_state["cal_selected"], len(events))
+        _state["status"] = f"Selected {events[_state['cal_selected']].get('summary', 'Untitled')}"
+
+
+def _screen_voice_notes() -> None:
+    _fill(0, 0, W, H, BLACK)
+    _draw_text("VOICE NOTES", W // 2, 20, TEAL, scale=2)
+    _fill(16, 38, W - 32, 1, DGRAY)
+
+    recordings = _state["recordings"]
+    if not recordings:
+        _draw_text("No voice notes yet", W // 2, 150, GRAY, scale=3)
+        _draw_text("Press 24 to record", W // 2, 188, DGRAY, scale=2)
+    else:
+        selected = _state["selected_recording"]
+        for i, rec in enumerate(recordings[:4]):
+            cy = 74 + i * 56
+            is_sel = (i == selected)
+            if is_sel:
+                _fill(12, cy - 20, W - 24, 44, DGRAY)
+                _draw_rect_outline(12, cy - 20, W - 24, 44, TEAL)
+            name_color = WHITE if is_sel else GRAY
+            detail_color = TEAL if is_sel else _px(80, 80, 80)
+            _draw_text_left("VOICE NOTE", 24, cy - 12, name_color, scale=2)
+            _draw_text_left(rec.stem[:28], 24, cy + 8, detail_color, scale=1)
+
+    _draw_text("25 browse  24 record  23 home", W // 2, 308, DGRAY, scale=1)
+
+
 def _screen_calendar() -> None:
     _fill(0, 0, W, H, BLACK)
     _draw_text("CALENDAR", W // 2, 20, TEAL, scale=2)
     _fill(16, 38, W - 32, 1, DGRAY)
 
     if _state["cal_loading"]:
-        _draw_text("Loading...", W // 2, 160, GRAY, scale=2)
-        _draw_text("27 next page  23 home", W // 2, 308, DGRAY, scale=1)
+        _draw_text("Loading...", W // 2, 160, GRAY, scale=3)
         return
 
     events = _state["cal_events"]
     if not events:
-        _draw_text("No events found", W // 2, 150, GRAY, scale=2)
-        _draw_text("Say 'connect calendar' to sign in", W // 2, 185, DGRAY, scale=1)
+        _draw_text("No events today", W // 2, 150, GRAY, scale=3)
+        _draw_text("Say 'connect calendar' to link account", W // 2, 188, DGRAY, scale=2)
     else:
-        scroll = _state["cal_scroll"]
-        visible = events[scroll:scroll + 4]
-        y = 46
-        for ev in visible:
-            title = ev.get("summary", "Untitled")
-            if len(title) > 22:
-                title = title[:21] + "."
+        now = datetime.now()
+        today = now.date()
+        selected = _state["cal_selected"]
+        for i, ev in enumerate(events[:4]):
+            cy = 74 + i * 56
+            title = ev.get("summary", "Untitled")[:30]
             start_raw = ev.get("start", "")
-            if isinstance(start_raw, dict):
-                dt_str = start_raw.get("dateTime") or start_raw.get("date", "")
-            else:
-                dt_str = start_raw or ""
+            dt_str = start_raw.get("dateTime") or start_raw.get("date", "") if isinstance(start_raw, dict) else (start_raw or "")
             try:
                 dt = datetime.fromisoformat(dt_str)
-                time_label = dt.strftime("%a %d %b  %I:%M %p")
+                time_label = dt.strftime("%I:%M %p") if dt.date() == today else dt.strftime("%b %d  %I:%M %p")
+                past = dt < now
             except (ValueError, TypeError):
-                time_label = dt_str[:18] if dt_str else "All day"
-            _draw_text_left(title, 16, y, WHITE, scale=2)
-            y += 18
-            _draw_text_left(time_label, 20, y, TEAL, scale=1)
-            y += 8
-            _fill(16, y + 2, W - 32, 1, DGRAY)
-            y += 8
+                time_label = "All day"
+                past = False
+            is_sel = (i == selected)
+            if is_sel:
+                _fill(12, cy - 20, W - 24, 44, DGRAY)
+                _draw_rect_outline(12, cy - 20, W - 24, 44, TEAL)
+            title_col = WHITE if is_sel else (DGRAY if past else GRAY)
+            time_col = TEAL if is_sel else (_px(70, 70, 70) if past else DGRAY)
+            _draw_text_left(title, 24, cy - 12, title_col, scale=2)
+            _draw_text_left(time_label, 24, cy + 8, time_col, scale=1)
 
-        total = len(events)
-        scroll = _state["cal_scroll"]
-        if scroll > 0:
-            _draw_text("22 up", 16, 296, GRAY, scale=1)
-        if scroll + 4 < total:
-            _draw_text("27 down", W - 60, 296, GRAY, scale=1)
-        _draw_text(f"{scroll+1}-{min(scroll+4, total)} of {total}", W // 2, 296, DGRAY, scale=1)
-
-    _draw_text("27 next page  23 home", W // 2, 310, DGRAY, scale=1)
+    _draw_text("25 browse  23 home", W // 2, 308, DGRAY, scale=1)
 
 
 def _screen_pomodoro_select() -> None:
@@ -604,6 +656,28 @@ def _screen_pomodoro_run() -> None:
     _draw_text("23 cancel session", W // 2, 300, DGRAY, scale=1)
 
 
+def _screen_stress_level() -> None:
+    _fill(0, 0, W, H, BLACK)
+    _draw_text("STRESS LEVEL", W // 2, 20, TEAL, scale=2)
+    _fill(14, 36, W - 28, 1, DGRAY)
+
+    idx = _state["stress_level"]
+    level = STRESS_LEVELS[idx]
+
+    _draw_text(level["label"], W // 2, 132, level["color"], scale=5)
+
+    dot_spacing = 28
+    dot_total = len(STRESS_LEVELS) * dot_spacing
+    dot_start = W // 2 - dot_total // 2 + dot_spacing // 2
+    for i, sl in enumerate(STRESS_LEVELS):
+        col = sl["color"] if i == idx else DGRAY
+        cx = dot_start + i * dot_spacing
+        _fill(cx - 6, 196, 12, 12, col)
+
+    _draw_text(level["tip"], W // 2, 230, GRAY, scale=1)
+    _draw_text("25 change level  23 home", W // 2, 308, DGRAY, scale=1)
+
+
 def _draw_screen() -> None:
     s = _state["screen"]
     if s == "home":
@@ -618,12 +692,16 @@ def _draw_screen() -> None:
         _screen_timer()
     elif s == "events":
         _screen_events()
+    elif s == "voice_notes":
+        _screen_voice_notes()
     elif s == "calendar":
         _screen_calendar()
     elif s == "pomodoro_select":
         _screen_pomodoro_select()
     elif s == "pomodoro_run":
         _screen_pomodoro_run()
+    elif s == "stress_level":
+        _screen_stress_level()
     flush()
 
 
@@ -693,6 +771,8 @@ def _cycle_page(direction: int) -> None:
         _state["status"] = ""
     if new_screen == "calendar":
         threading.Thread(target=_fetch_calendar, daemon=True).start()
+    elif new_screen == "voice_notes":
+        _sync_recordings()
 
 
 def _fetch_calendar() -> None:
@@ -706,6 +786,7 @@ def _fetch_calendar() -> None:
         with _lock:
             _state["cal_events"] = events
             _state["cal_scroll"] = 0
+            _state["cal_selected"] = 0
     except Exception as e:
         print(f"[UI] Calendar fetch: {e}")
         with _lock:
@@ -757,33 +838,28 @@ def _pomodoro_tick(preset_idx: int) -> None:
 
 # ── GPIO handlers ──────────────────────────────────────────────────────────────
 def _on_record_button() -> None:
+    global _recording_as_note
     with _lock:
         screen    = _state["screen"]
         recording = _state["recording"]
-    if screen in ("recording",) or recording:
+    if screen == "recording" or recording:
         wav = _stop_recording()
         if wav:
-            threading.Thread(target=_process, args=(wav,), daemon=True).start()
+            if _recording_as_note:
+                # Return to voice notes page — file already synced by _stop_recording
+                with _lock:
+                    _state["screen"] = "voice_notes"
+            else:
+                threading.Thread(target=_process, args=(wav,), daemon=True).start()
     elif screen not in ("processing", "playing", "pomodoro_run"):
+        _recording_as_note = (screen == "voice_notes")
         _start_recording()
 
 
 def _on_next_button() -> None:
     with _lock:
         screen = _state["screen"]
-    if screen == "calendar":
-        with _lock:
-            total  = len(_state["cal_events"])
-            scroll = _state["cal_scroll"]
-        if scroll + 4 < total:
-            with _lock:
-                _state["cal_scroll"] = scroll + 1
-        else:
-            _cycle_page(+1)
-    elif screen == "pomodoro_select":
-        with _lock:
-            _state["pomo_preset"] = (_state["pomo_preset"] + 1) % len(POMODORO_PRESETS)
-    elif screen in PAGES:
+    if screen in PAGES:
         _cycle_page(+1)
     else:
         _go_home()
@@ -792,18 +868,7 @@ def _on_next_button() -> None:
 def _on_prev_button() -> None:
     with _lock:
         screen = _state["screen"]
-    if screen == "calendar":
-        with _lock:
-            scroll = _state["cal_scroll"]
-        if scroll > 0:
-            with _lock:
-                _state["cal_scroll"] = scroll - 1
-        else:
-            _cycle_page(-1)
-    elif screen == "pomodoro_select":
-        with _lock:
-            _state["pomo_preset"] = (_state["pomo_preset"] - 1) % len(POMODORO_PRESETS)
-    elif screen in PAGES:
+    if screen in PAGES:
         _cycle_page(-1)
     else:
         _go_home()
@@ -812,10 +877,41 @@ def _on_prev_button() -> None:
 def _on_action_button() -> None:
     with _lock:
         screen = _state["screen"]
-    if screen == "home":
+    if screen == "voice_notes":
         _play_selected_recording()
+    elif screen == "calendar":
+        with _lock:
+            events = _state["cal_events"]
+            if events:
+                title = events[_state["cal_selected"]].get("summary", "Untitled")
+                _state["status"] = f"Selected {title}"
     elif screen == "pomodoro_select":
         _start_pomodoro_session()
+    elif screen == "stress_level":
+        with _lock:
+            level = STRESS_LEVELS[_state["stress_level"]]["label"]
+            _state["status"] = f"Selected {level}"
+    elif screen == "home":
+        _cycle_page(+1)
+    else:
+        _go_home()
+
+
+def _on_nav_button() -> None:
+    with _lock:
+        screen = _state["screen"]
+    if screen == "voice_notes":
+        _cycle_next_recording()
+    elif screen == "calendar":
+        _cycle_selected_calendar_event()
+    elif screen == "pomodoro_select":
+        with _lock:
+            _state["pomo_preset"] = _advance_selection(_state["pomo_preset"], len(POMODORO_PRESETS))
+    elif screen == "stress_level":
+        with _lock:
+            _state["stress_level"] = _advance_selection(_state["stress_level"], len(STRESS_LEVELS))
+    elif screen == "home":
+        _cycle_page(+1)
     else:
         _go_home()
 
@@ -843,15 +939,17 @@ def run() -> None:
             Button(GPIO_PREV,   pull_up=True, bounce_time=0.1),
             Button(GPIO_ACTION, pull_up=True, bounce_time=0.1),
             Button(GPIO_HOME,   pull_up=True, bounce_time=0.1),
+            Button(GPIO_NAV,   pull_up=True, bounce_time=0.1),
         ]
         btns[0].when_pressed = _on_record_button
         btns[1].when_pressed = _on_next_button
         btns[2].when_pressed = _on_prev_button
         btns[3].when_pressed = _on_action_button
         btns[4].when_pressed = _on_home_button
+        btns[5].when_pressed = _on_nav_button
 
         _sync_recordings()
-        print("[PAIGE] Running. GPIO26=record, GPIO27=next, GPIO22=prev, GPIO18=action, GPIO23=home")
+        print("[PAIGE] Running. GPIO4=record, GPIO27=next, GPIO22=prev, GPIO18=action, GPIO23=home, GPIO25=navigate")
 
         tick = 0
         while True:

@@ -11,7 +11,7 @@ WorkingDirectory=/home/rpi/Desktop/PAIGE
 # Give the framebuffer and GPIO time to initialise on boot
 ExecStartPre=/bin/sleep 3
 
-ExecStart=/usr/bin/python3 /home/rpi/Desktop/PAIGE/app.py
+ExecStart=/home/rpi/Desktop/PAIGE/venv/bin/python /home/rpi/Desktop/PAIGE/app.py
 
 # Kill every process in the cgroup on stop (ensures GPIO pins are freed)
 KillMode=control-group
