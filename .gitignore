@@ -11,3 +11,15 @@ token.json
 credentials.json
 client_secret*.json
 tokens.json
+
+# Ignore the massive datasets
+Datasets/
+*.csv
+*.xlsx
+
+# Ignore the ML model (usually too large for GitHub)
+*.pkl
+
+# Ignore temporary Python files
+__pycache__/
+.DS_Store
