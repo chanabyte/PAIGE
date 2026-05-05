@@ -18,6 +18,6 @@ GEMINI_MODEL = "gemini-2.5-flash"
 VOICE        = "en-GB-SoniaNeural"
 
 # ── Display (ILI9481 3.5" TFT LCD) ───────────────────────────────────────────
-DISPLAY_WIDTH  = 480
-DISPLAY_HEIGHT = 320
+DISPLAY_WIDTH  = 480   # logical landscape width
+DISPLAY_HEIGHT = 320   # logical landscape height
 DISPLAY_FB     = "/dev/fb2"

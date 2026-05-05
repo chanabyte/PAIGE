@@ -38,7 +38,8 @@ print("3. Creating a test event...")
 create_result = calendar_api.create_event(
     title="PAIGE Test Event",
     description="Created by the test script",
-    hours_from_now=0.5
+    start_datetime="2026-05-05T14:00:00",
+    end_datetime="2026-05-05T14:30:00",
 )
 if "error" in create_result:
     print(f"   ❌ Error: {create_result['error']}")

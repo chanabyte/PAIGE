@@ -1,0 +1,28 @@
+[Unit]
+Description=PAIGE UI — voice assistant display
+After=multi-user.target sound.target
+Wants=sound.target
+
+[Service]
+Type=simple
+User=rpi
+WorkingDirectory=/home/rpi/Desktop/PAIGE
+
+# Give the framebuffer and GPIO time to initialise on boot
+ExecStartPre=/bin/sleep 3
+
+ExecStart=/usr/bin/python3 /home/rpi/Desktop/PAIGE/app.py
+
+# Kill every process in the cgroup on stop (ensures GPIO pins are freed)
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+Restart=on-failure
+RestartSec=5
+
+EnvironmentFile=-/home/rpi/Desktop/PAIGE/.env
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -35,7 +35,10 @@ load_dotenv()
 _DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 
-_DEFAULT_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+_DEFAULT_SCOPE = (
+    "https://www.googleapis.com/auth/calendar "
+    "https://www.googleapis.com/auth/tasks"
+)
 
 
 @dataclass(frozen=True)
@@ -111,8 +114,8 @@ def disconnect_calendar() -> dict:
     return {"status": "disconnected", "removed": removed}
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
 
 
 def _token_expired(token: dict[str, Any], skew_s: int = 60) -> bool:
@@ -127,7 +130,7 @@ def _token_expired(token: dict[str, Any], skew_s: int = 60) -> bool:
         try:
             # Example: 2026-04-08T02:44:54Z
             dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-            return _utc_now() >= dt - timedelta(seconds=skew_s)
+            return _local_now() >= dt - timedelta(seconds=skew_s)
         except Exception:
             return True
 
@@ -363,7 +366,7 @@ def list_upcoming_events(max_results: int = 5) -> dict:
     cfg = load_config()
     access_token = _get_bearer_token(cfg)
 
-    now = _utc_now().isoformat()
+    now = _local_now().isoformat()
 
     url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
     max_results_int = max(1, min(int(max_results), 10))
@@ -401,20 +404,36 @@ def list_upcoming_events(max_results: int = 5) -> dict:
     return {"status": "ok", "events": items}
 
 
-def create_event(title: str, description: str = "", hours_from_now: float = 1.0) -> dict:
+def create_event(
+    title: str,
+    description: str = "",
+    start_datetime: str = "",
+    end_datetime: str = "",
+) -> dict:
     """Create an event on the user's primary calendar.
 
     Args:
         title: Event title
         description: Event description (optional)
-        hours_from_now: How many hours from now to schedule the event (default: 1)
+        start_datetime: ISO 8601 start datetime, e.g. "2026-05-05T14:00:00" (defaults to 1 hour from now)
+        end_datetime: ISO 8601 end datetime, e.g. "2026-05-05T15:00:00" (defaults to 1 hour after start)
     """
     cfg = load_config()
     access_token = _get_bearer_token(cfg)
 
-    now = _utc_now()
-    start_time = now + timedelta(hours=hours_from_now)
-    end_time = start_time + timedelta(hours=1)
+    if start_datetime:
+        start_time = datetime.fromisoformat(start_datetime)
+        if start_time.tzinfo is None:
+            start_time = start_time.astimezone()
+    else:
+        start_time = _local_now() + timedelta(hours=1)
+
+    if end_datetime:
+        end_time = datetime.fromisoformat(end_datetime)
+        if end_time.tzinfo is None:
+            end_time = end_time.astimezone()
+    else:
+        end_time = start_time + timedelta(hours=1)
 
     event = {
         "summary": title,
@@ -440,4 +459,45 @@ def create_event(title: str, description: str = "", hours_from_now: float = 1.0)
         "event_id": data.get("id"),
         "title": data.get("summary"),
         "start": (data.get("start") or {}).get("dateTime"),
+    }
+
+
+def create_task(title: str, notes: str = "", due_date: str = "") -> dict:
+    """Create a task in the user's default Google Tasks list.
+
+    Args:
+        title: Task title (required)
+        notes: Optional notes or description
+        due_date: Optional due date as ISO 8601 date, e.g. "2026-05-10"
+    """
+    cfg = load_config()
+    access_token = _get_bearer_token(cfg)
+
+    body: dict = {"title": title}
+    if notes:
+        body["notes"] = notes
+    if due_date:
+        try:
+            dt = datetime.fromisoformat(due_date)
+            body["due"] = dt.strftime("%Y-%m-%dT00:00:00.000Z")
+        except ValueError:
+            pass
+
+    url = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks"
+    resp = requests.post(
+        url,
+        json=body,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    data = resp.json()
+
+    if resp.status_code not in (200, 201):
+        return {"error": data}
+
+    return {
+        "status": "created",
+        "task_id": data.get("id"),
+        "title": data.get("title"),
+        "due": data.get("due"),
     }
