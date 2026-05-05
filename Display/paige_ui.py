@@ -336,10 +336,10 @@ def _draw_recording_strip() -> None:
 
 
 # ── State ──────────────────────────────────────────────────────────────────────
-GPIO_RECORD = 24
+GPIO_RECORD = 26
 GPIO_NEXT   = 27
 GPIO_PREV   = 22
-GPIO_ACTION = 25
+GPIO_ACTION = 6
 GPIO_HOME   = 23
 
 PAGES = ["home", "calendar", "pomodoro_select"]
