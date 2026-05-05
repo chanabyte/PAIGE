@@ -9,7 +9,7 @@ Single-user model:
 This implementation uses the OAuth 2.0 Device Authorization Grant:
 https://developers.google.com/identity/protocols/oauth2/limited-input-device
 
-You must create an OAuth client suitable for device flow and provide:
+You must create an OAuth client suitable for device flow and provide via environment (.env):
 - GOOGLE_OAUTH_CLIENT_ID
 - (optional) GOOGLE_OAUTH_CLIENT_SECRET
 
@@ -29,10 +29,42 @@ from typing import Any
 import requests
 
 
+_DOTENV_LOADED = False
+
+
+def _load_dotenv_if_available() -> None:
+    """Load .env once so CLI/scripts can run without manual exports.
+
+    Priority:
+    - PAIGE_DOTENV_PATH (explicit path)
+    - DOTENV_PATH (explicit path)
+    - <repo_root>/.env
+    """
+
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+
+    try:
+        from dotenv import load_dotenv
+
+        explicit = (os.getenv("PAIGE_DOTENV_PATH") or os.getenv("DOTENV_PATH") or "").strip()
+        if explicit:
+            load_dotenv(dotenv_path=explicit, override=False)
+        else:
+            load_dotenv(dotenv_path=_repo_root() / ".env", override=False)
+    except Exception:
+        # If python-dotenv isn't installed, we fall back to real environment vars.
+        pass
+    finally:
+        _DOTENV_LOADED = True
+
+
 _DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 _DEFAULT_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar"
 
 
 @dataclass(frozen=True)
@@ -51,6 +83,8 @@ def _repo_root() -> Path:
 
 
 def load_config() -> CalendarAuthConfig:
+    _load_dotenv_if_available()
+
     root = _repo_root()
     token_path = Path(os.getenv("GOOGLE_TOKEN_PATH", str(root / "tokens.json")))
     pending_path = Path(os.getenv("GOOGLE_PENDING_PATH", str(root / ".calendar_device_flow.json")))
@@ -59,17 +93,6 @@ def load_config() -> CalendarAuthConfig:
     client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
     if client_secret is not None:
         client_secret = client_secret.strip() or None
-
-    # If env vars aren't set but tokens.json exists (google-auth format), fall back.
-    if not client_id and token_path.exists():
-        try:
-            existing = _read_json(token_path)
-            if isinstance(existing.get("client_id"), str):
-                client_id = existing["client_id"].strip()
-            if not client_secret and isinstance(existing.get("client_secret"), str):
-                client_secret = existing["client_secret"].strip() or None
-        except Exception:
-            pass
 
     if not client_id:
         raise RuntimeError(
@@ -88,6 +111,12 @@ def load_config() -> CalendarAuthConfig:
         scope=scope,
         connect_wait_s=connect_wait_s,
     )
+
+
+def _default_time_zone() -> str:
+    # Prefer an explicit IANA timezone (e.g. "Europe/London").
+    tz = (os.getenv("GOOGLE_CALENDAR_TIMEZONE") or os.getenv("CALENDAR_TIMEZONE") or "").strip()
+    return tz or "UTC"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -173,8 +202,9 @@ def _refresh_access_token(cfg: CalendarAuthConfig, token: dict[str, Any]) -> dic
     if not refresh_token:
         raise RuntimeError("No refresh_token found; please re-connect calendar.")
 
-    client_id = str(token.get("client_id") or cfg.client_id)
-    client_secret = token.get("client_secret") or cfg.client_secret
+    # Always use env-provided OAuth client credentials (do not rely on tokens.json).
+    client_id = cfg.client_id
+    client_secret = cfg.client_secret
 
     data: dict[str, str] = {
         "client_id": client_id,
@@ -210,6 +240,79 @@ def _load_token_if_any(cfg: CalendarAuthConfig) -> dict[str, Any] | None:
         return _normalize_token(_read_json(cfg.token_path))
     except Exception:
         return None
+
+
+def _token_has_scope(token: dict[str, Any], required_scope: str) -> bool:
+    scope = token.get("scope")
+    if isinstance(scope, str) and scope:
+        scopes = scope.split()
+        return required_scope in scopes
+
+    scopes = token.get("scopes")
+    if isinstance(scopes, list) and scopes:
+        return required_scope in {str(s) for s in scopes}
+
+    return False
+
+
+def _require_write_scope(cfg: CalendarAuthConfig) -> None:
+    # If the configured scope is explicitly read-only, short-circuit with a clear message.
+    if "readonly" in (cfg.scope or ""):
+        raise RuntimeError(
+            "Google Calendar is configured for read-only access. "
+            "Set GOOGLE_CALENDAR_SCOPE=https://www.googleapis.com/auth/calendar and reconnect."
+        )
+
+    token = _load_token_if_any(cfg)
+    if not token:
+        raise RuntimeError("Calendar is not connected. Ask to connect your calendar first.")
+
+    # Tokens minted with calendar.readonly cannot be used for writes.
+    if _token_has_scope(token, _DEFAULT_SCOPE) and not _token_has_scope(token, _WRITE_SCOPE):
+        raise RuntimeError(
+            "Calendar is connected with read-only permissions. Disconnect and reconnect after "
+            "setting GOOGLE_CALENDAR_SCOPE=https://www.googleapis.com/auth/calendar."
+        )
+
+
+def _request_json(
+    cfg: CalendarAuthConfig,
+    method: str,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    timeout_s: int = 15,
+) -> tuple[int, dict[str, Any]]:
+    access_token = _get_bearer_token(cfg)
+    resp = requests.request(
+        method,
+        url,
+        params=params,
+        json=json_body,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=timeout_s,
+    )
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"raw": resp.text}
+    return resp.status_code, payload
+
+
+def _event_time_payload(iso_or_date: str, time_zone: str | None) -> dict[str, str]:
+    text = (iso_or_date or "").strip()
+    if not text:
+        raise ValueError("Missing datetime/date")
+
+    # All-day event date.
+    if "T" not in text and len(text) == 10:
+        return {"date": text}
+
+    payload: dict[str, str] = {"dateTime": text}
+    if time_zone:
+        payload["timeZone"] = time_zone
+    return payload
 
 
 def _load_pending_if_any(cfg: CalendarAuthConfig) -> dict[str, Any] | None:
@@ -304,10 +407,7 @@ def connect_calendar() -> dict:
                 "token_type": p.get("token_type", "Bearer"),
                 "expires_at": time.time() + expires_in,
                 "token_uri": _TOKEN_URL,
-                "client_id": cfg.client_id,
             }
-            if cfg.client_secret:
-                token_to_save["client_secret"] = cfg.client_secret
 
             _write_token(cfg.token_path, token_to_save)
             cfg.pending_path.unlink(missing_ok=True)
@@ -371,15 +471,8 @@ def list_upcoming_events(max_results: int = 5) -> dict:
         "orderBy": "startTime",
     }
 
-    resp = requests.get(
-        url,
-        params=params,
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=15,
-    )
-    data = resp.json()
-
-    if resp.status_code != 200:
+    status, data = _request_json(cfg, "GET", url, params=params)
+    if status != 200:
         return {"error": data}
 
     items = []
@@ -396,3 +489,158 @@ def list_upcoming_events(max_results: int = 5) -> dict:
         )
 
     return {"status": "ok", "events": items}
+
+
+def find_events(
+    query: str,
+    *,
+    time_min: str | None = None,
+    time_max: str | None = None,
+    max_results: int = 5,
+) -> dict:
+    """Find events in the user's primary calendar.
+
+    `time_min` / `time_max` should be RFC3339/ISO strings.
+    Returns event ids so callers can update/delete.
+    """
+
+    cfg = load_config()
+    _ = _get_bearer_token(cfg)
+
+    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    max_results_int = max(1, min(int(max_results), 10))
+    params: dict[str, Any] = {
+        "maxResults": str(max_results_int),
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "q": query,
+    }
+    if time_min:
+        params["timeMin"] = time_min
+    if time_max:
+        params["timeMax"] = time_max
+
+    status, data = _request_json(cfg, "GET", url, params=params)
+    if status != 200:
+        return {"error": data}
+
+    results = []
+    for ev in (data.get("items", []) or [])[:max_results_int]:
+        start = (ev.get("start") or {}).get("dateTime") or (ev.get("start") or {}).get("date")
+        end = (ev.get("end") or {}).get("dateTime") or (ev.get("end") or {}).get("date")
+        results.append(
+            {
+                "id": ev.get("id"),
+                "summary": ev.get("summary", "(no title)"),
+                "start": start,
+                "end": end,
+                "location": ev.get("location"),
+            }
+        )
+
+    return {"status": "ok", "events": results}
+
+
+def create_event(
+    *,
+    summary: str,
+    start: str,
+    end: str,
+    time_zone: str | None = None,
+    location: str | None = None,
+    description: str | None = None,
+) -> dict:
+    """Create an event on the user's primary calendar."""
+
+    cfg = load_config()
+    _require_write_scope(cfg)
+
+    tz = (time_zone or "").strip() or _default_time_zone()
+    body: dict[str, Any] = {
+        "summary": summary,
+        "start": _event_time_payload(start, tz),
+        "end": _event_time_payload(end, tz),
+    }
+    if location:
+        body["location"] = location
+    if description:
+        body["description"] = description
+
+    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    status, data = _request_json(cfg, "POST", url, json_body=body)
+    if status not in {200, 201}:
+        return {"error": data}
+
+    return {
+        "status": "created",
+        "id": data.get("id"),
+        "summary": data.get("summary"),
+        "htmlLink": data.get("htmlLink"),
+        "start": (data.get("start") or {}).get("dateTime") or (data.get("start") or {}).get("date"),
+        "end": (data.get("end") or {}).get("dateTime") or (data.get("end") or {}).get("date"),
+    }
+
+
+def update_event(
+    *,
+    event_id: str,
+    summary: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    time_zone: str | None = None,
+    location: str | None = None,
+    description: str | None = None,
+) -> dict:
+    """Patch an existing event by id on the user's primary calendar."""
+
+    cfg = load_config()
+    _require_write_scope(cfg)
+
+    tz = (time_zone or "").strip() or _default_time_zone()
+    body: dict[str, Any] = {}
+    if summary is not None and summary.strip():
+        body["summary"] = summary
+    if start is not None and start.strip():
+        body["start"] = _event_time_payload(start, tz)
+    if end is not None and end.strip():
+        body["end"] = _event_time_payload(end, tz)
+    if location is not None:
+        body["location"] = location
+    if description is not None:
+        body["description"] = description
+
+    if not body:
+        return {"error": "No updates provided."}
+
+    url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
+    status, data = _request_json(cfg, "PATCH", url, json_body=body)
+    if status != 200:
+        return {"error": data}
+
+    return {
+        "status": "updated",
+        "id": data.get("id"),
+        "summary": data.get("summary"),
+        "htmlLink": data.get("htmlLink"),
+        "start": (data.get("start") or {}).get("dateTime") or (data.get("start") or {}).get("date"),
+        "end": (data.get("end") or {}).get("dateTime") or (data.get("end") or {}).get("date"),
+    }
+
+
+def delete_event(*, event_id: str) -> dict:
+    """Delete an event by id from the user's primary calendar."""
+
+    cfg = load_config()
+    _require_write_scope(cfg)
+
+    url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
+    access_token = _get_bearer_token(cfg)
+    resp = requests.delete(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
+    if resp.status_code not in {200, 204}:
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {"raw": resp.text}
+        return {"error": payload}
+
+    return {"status": "deleted", "id": event_id}

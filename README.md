@@ -36,6 +36,49 @@ GOOGLE_OAUTH_CLIENT_SECRET=...  # optional
 
 To sign out: "disconnect my calendar"
 
+## Google Calendar (Write Access)
+
+By default, PAIGE requests **read-only** calendar access (so it can list events).
+If you want PAIGE to **create/update/delete** events, set a broader scope and re-connect:
+
+Add to `.env`:
+```
+GOOGLE_CALENDAR_SCOPE=https://www.googleapis.com/auth/calendar
+GOOGLE_CALENDAR_TIMEZONE=UTC
+```
+
+Then disconnect + connect again (tokens minted with read-only scope cannot be used for writes):
+
+```bash
+python scripts/test_calendar_api.py disconnect
+python scripts/test_calendar_api.py connect
+```
+
+## Testing the Calendar API
+
+Use the CLI harness to validate auth + writes without needing the button/audio loop:
+
+```bash
+python scripts/test_calendar_api.py list --max-results 5
+python scripts/test_calendar_api.py create --summary "PAIGE test" \
+	--start "2026-05-05T15:00:00Z" --end "2026-05-05T15:30:00Z"
+python scripts/test_calendar_api.py find --query "PAIGE test" --max-results 5
+```
+
+To delete an event, copy its `id` from `find` output:
+
+```bash
+python scripts/test_calendar_api.py delete --event-id <id>
+```
+
+## Testing Gemini Tool-Calling (Text Mode)
+
+This bypasses recording audio and sends your request as text to Gemini:
+
+```bash
+python scripts/test_gemini_calendar_flow.py "Create a calendar event tomorrow at 3pm called Dentist"
+```
+
 ## Run
 
 ```bash

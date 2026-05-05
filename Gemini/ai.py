@@ -30,6 +30,14 @@ _PROMPT = (
     " If the request requires a tool, call it before responding."
 )
 
+_TEXT_PROMPT = (
+    "The user will give you a request as text."
+    " First, restate it under the label 'You said:'."
+    " Then, on a new line, provide a summary of the request under the label 'To summarize:'."
+    " Then, on a new line, provide your response under the label 'Response:'."
+    " If the request requires a tool, call it before responding."
+)
+
 def _clean(text: str) -> str:
     text = re.sub(r'\*+', '', text)
     text = re.sub(r'#+\s*', '', text)
@@ -121,4 +129,52 @@ def process(wav_path: Path) -> str:
             spoken_parts.append("Response: " + text.split("Response:", 1)[1].strip())
         _speak(" ".join(spoken_parts) if spoken_parts else text)
 
+    return text
+
+
+def process_text(user_text: str) -> str:
+    """Test helper: run Gemini tool-calling from plain text (no audio upload)."""
+
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(text=_TEXT_PROMPT + "\n\nUser request: " + user_text.strip()),
+            ],
+        )
+    ]
+
+    response = _client.models.generate_content(
+        model=config.GEMINI_MODEL, contents=contents, config=_CONFIG
+    )
+
+    fn_calls = [
+        p.function_call
+        for p in response.candidates[0].content.parts
+        if getattr(p, "function_call", None)
+    ]
+
+    if fn_calls:
+        contents.append(response.candidates[0].content)
+        for fc in fn_calls:
+            result = tool_registry.FUNCTIONS[fc.name](**dict(fc.args))
+            print(f"[TOOL] {fc.name}({dict(fc.args)}) → {result}")
+            contents.append(
+                types.Content(
+                    parts=[types.Part(
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"result": result},
+                        )
+                    )]
+                )
+            )
+        follow_up = _client.models.generate_content(
+            model=config.GEMINI_MODEL, contents=contents, config=_CONFIG
+        )
+        text = follow_up.text
+    else:
+        text = response.text
+
+    print(f"\n[AI] {text}\n")
     return text
