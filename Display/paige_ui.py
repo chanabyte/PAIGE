@@ -336,10 +336,10 @@ def _draw_recording_strip() -> None:
 
 
 # ── State ──────────────────────────────────────────────────────────────────────
-GPIO_RECORD = 26
+GPIO_RECORD = 4
 GPIO_NEXT   = 27
 GPIO_PREV   = 22
-GPIO_ACTION = 6
+GPIO_ACTION = 18
 GPIO_HOME   = 23
 
 PAGES = ["home", "calendar", "pomodoro_select"]
@@ -851,7 +851,7 @@ def run() -> None:
         btns[4].when_pressed = _on_home_button
 
         _sync_recordings()
-        print("[PAIGE] Running. GPIO24=record, GPIO27=next, GPIO22=prev, GPIO25=action, GPIO23=home")
+        print("[PAIGE] Running. GPIO26=record, GPIO27=next, GPIO22=prev, GPIO18=action, GPIO23=home")
 
         tick = 0
         while True:

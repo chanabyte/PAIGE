@@ -360,18 +360,19 @@ def _get_bearer_token(cfg: CalendarAuthConfig) -> str:
     return str(access_token)
 
 
-def list_upcoming_events(max_results: int = 5) -> dict:
-    """List upcoming events from the user's primary calendar."""
+def list_upcoming_events(max_results: int = 10) -> dict:
+    """List events from the start of today, ordered by start time."""
 
     cfg = load_config()
     access_token = _get_bearer_token(cfg)
 
-    now = _local_now().isoformat()
+    # Start of today in local timezone so events earlier today are included
+    today_start = _local_now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-    max_results_int = max(1, min(int(max_results), 10))
+    max_results_int = max(1, min(int(max_results), 20))
     params = {
-        "timeMin": now,
+        "timeMin": today_start.isoformat(),
         "maxResults": str(max_results_int),
         "singleEvents": "true",
         "orderBy": "startTime",
