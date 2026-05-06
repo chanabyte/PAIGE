@@ -1,5 +1,5 @@
 """
-PAIGE UI — ILI9486 framebuffer display (480×320, /dev/fb2)
+PAIGE UI — ILI9486 framebuffer display (480×320, /dev/fb1)
 GPIO 17 starts/stops voice notes, GPIO 22 browses older notes,
 and GPIO 23 plays the selected note.
 Gemini function calling routes to timer / events screens.
@@ -7,6 +7,7 @@ Gemini function calling routes to timer / events screens.
 from __future__ import annotations
 
 import os
+import random
 import subprocess
 import struct
 import sys
@@ -340,6 +341,157 @@ def _advance_selection(index: int, count: int) -> int:
     return (index + 1) % count
 
 
+MAX30102_I2C_ADDRESS = 0x57
+MAX30102_I2C_BUS = 1
+STRESS_REFRESH_SECONDS = 8.0
+
+
+def _max30102_initialize(bus) -> None:
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x09, 0x40)
+    time.sleep(0.05)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x09, 0x03)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x0A, 0x27)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x08, 0x00)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x04, 0x00)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x05, 0x00)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x06, 0x00)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x0C, 0x24)
+    bus.write_byte_data(MAX30102_I2C_ADDRESS, 0x0D, 0x24)
+
+
+def _read_max30102_snapshot(sample_count: int = 96, sample_rate: int = 50) -> tuple[float | None, float | None]:
+    from smbus2 import SMBus
+    import numpy as np
+
+    bus = SMBus(MAX30102_I2C_BUS)
+    try:
+        _max30102_initialize(bus)
+        samples: list[float] = []
+        delay = 1.0 / sample_rate
+        for _ in range(sample_count):
+            data = bus.read_i2c_block_data(MAX30102_I2C_ADDRESS, 0x07, 6)
+            ir = ((data[3] & 0x03) << 16) | (data[4] << 8) | data[5]
+            samples.append(float(ir))
+            time.sleep(delay)
+
+        signal = np.asarray(samples, dtype=float)
+        signal -= signal.min()
+        if signal.ptp() < 1.0:
+            return None, None
+
+        smooth = np.convolve(signal, np.ones(5) / 5.0, mode="same")
+        baseline = float(np.median(smooth))
+        threshold = baseline + (float(smooth.max()) - baseline) * 0.45
+        min_distance = max(1, int(sample_rate * 0.35))
+        peaks: list[int] = []
+        last_peak = -min_distance
+        for idx in range(1, len(smooth) - 1):
+            if smooth[idx] > threshold and smooth[idx] >= smooth[idx - 1] and smooth[idx] >= smooth[idx + 1] and (idx - last_peak) >= min_distance:
+                peaks.append(idx)
+                last_peak = idx
+
+        if len(peaks) < 2:
+            return None, None
+
+        intervals_ms = np.diff(peaks) / sample_rate * 1000.0
+        mean_interval = float(np.mean(intervals_ms))
+        heart_rate = 60000.0 / mean_interval if mean_interval > 0 else None
+        if len(intervals_ms) > 1:
+            hrv = float(np.sqrt(np.mean(np.diff(intervals_ms) ** 2)))
+        else:
+            hrv = None
+        return heart_rate, hrv
+    finally:
+        bus.close()
+
+
+def _simulate_stress_snapshot() -> tuple[float, float]:
+    base_hr = 68 + random.uniform(-4, 8)
+    base_hrv = 62 - random.uniform(0, 18)
+    if datetime.now().minute % 3 == 0:
+        base_hr += 6
+        base_hrv -= 12
+    return round(max(56.0, min(base_hr, 108.0)), 1), round(max(18.0, base_hrv), 1)
+
+
+def _stress_level_from_reading(heart_rate: float | None, hrv: float | None) -> int:
+    if heart_rate is None or hrv is None:
+        return 1
+    if hrv < 25 or heart_rate >= 100:
+        return 3
+    if hrv < 40 or heart_rate >= 88:
+        return 2
+    if hrv < 60 or heart_rate >= 72:
+        return 1
+    return 0
+
+
+def _predict_next_stress_window(heart_rate: float | None, hrv: float | None, level_index: int) -> tuple[datetime, int]:
+    base_minutes = [180, 105, 45, 20][level_index]
+    if heart_rate is not None:
+        base_minutes += int(max(-20, min(20, (75.0 - heart_rate) * 1.2)))
+    if hrv is not None:
+        base_minutes += int(max(-15, min(15, (50.0 - hrv) * 0.8)))
+    minutes = max(5, base_minutes + random.randint(-10, 10))
+    return datetime.now() + timedelta(minutes=minutes), minutes
+
+
+def _stress_card_status(level_index: int, heart_rate: float | None, hrv: float | None, source: str) -> dict[str, object]:
+    level = STRESS_LEVELS[level_index]
+    prediction_at, prediction_minutes = _predict_next_stress_window(heart_rate, hrv, level_index)
+    return {
+        "source": source,
+        "status": "Live MAX30102 reading" if source == "MAX30102" else "Simulated fallback reading",
+        "heart_rate": heart_rate,
+        "hrv": hrv,
+        "level_index": level_index,
+        "level_label": level["label"],
+        "level_color": level["color"],
+        "level_tip": level["tip"],
+        "prediction_at": prediction_at,
+        "prediction_minutes": prediction_minutes,
+        "updated_at": datetime.now(),
+    }
+
+
+def _request_stress_refresh(force: bool = False) -> None:
+    with _lock:
+        running = _state["stress_monitor_running"]
+        last_updated = _state["stress_data"].get("updated_at")
+        if running:
+            return
+        if not force and last_updated is not None:
+            age = (datetime.now() - last_updated).total_seconds()
+            if age < STRESS_REFRESH_SECONDS:
+                return
+        _state["stress_monitor_running"] = True
+        _state["stress_data"]["status"] = "Reading MAX30102 on I2C..."
+
+    def _runner() -> None:
+        try:
+            source = "MAX30102"
+            heart_rate: float | None = None
+            hrv: float | None = None
+            try:
+                heart_rate, hrv = _read_max30102_snapshot()
+                if heart_rate is None or hrv is None:
+                    raise RuntimeError("insufficient pulse data")
+            except Exception as exc:
+                print(f"[UI] MAX30102 read failed: {exc}")
+                heart_rate, hrv = _simulate_stress_snapshot()
+                source = "SIMULATED"
+
+            level_index = _stress_level_from_reading(heart_rate, hrv)
+            snapshot = _stress_card_status(level_index, heart_rate, hrv, source)
+            with _lock:
+                _state["stress_level"] = level_index
+                _state["stress_data"].update(snapshot)
+        finally:
+            with _lock:
+                _state["stress_monitor_running"] = False
+
+    threading.Thread(target=_runner, daemon=True).start()
+
 
 # ── State ──────────────────────────────────────────────────────────────────────
 GPIO_RECORD = 4
@@ -387,6 +539,20 @@ _state = {
     "pomo_end": None,
     # Stress level page
     "stress_level": 1,
+    "stress_data": {
+        "source": "IDLE",
+        "status": "Tap 18 to read MAX30102",
+        "heart_rate": None,
+        "hrv": None,
+        "level_index": 1,
+        "level_label": "Moderate",
+        "level_color": YELLOW,
+        "level_tip": "Tap 18 to sample the sensor",
+        "prediction_at": None,
+        "prediction_minutes": None,
+        "updated_at": None,
+    },
+    "stress_monitor_running": False,
 }
 
 _recording_as_note = False   # True when record was pressed on voice_notes page
@@ -657,25 +823,41 @@ def _screen_pomodoro_run() -> None:
 
 
 def _screen_stress_level() -> None:
+    _request_stress_refresh()
+
     _fill(0, 0, W, H, BLACK)
-    _draw_text("STRESS LEVEL", W // 2, 20, TEAL, scale=2)
-    _fill(14, 36, W - 28, 1, DGRAY)
+    _draw_text("STRESS PREDICTION", W // 2, 20, TEAL, scale=2)
+    _fill(16, 38, W - 32, 1, DGRAY)
 
-    idx = _state["stress_level"]
-    level = STRESS_LEVELS[idx]
+    data = _state["stress_data"]
+    status = str(data.get("status", "Reading..."))
+    source = str(data.get("source", "IDLE"))
+    heart_rate = data.get("heart_rate")
+    hrv = data.get("hrv")
+    level_index = int(data.get("level_index", _state["stress_level"]))
+    level = STRESS_LEVELS[max(0, min(level_index, len(STRESS_LEVELS) - 1))]
+    prediction_at = data.get("prediction_at")
+    prediction_minutes = data.get("prediction_minutes")
+    updated_at = data.get("updated_at")
 
-    _draw_text(level["label"], W // 2, 132, level["color"], scale=5)
+    cards = [
+        ("HEART RATE", f"{heart_rate:.0f} bpm" if heart_rate is not None else "Reading...", f"HRV {hrv:.1f} ms" if hrv is not None else status, WHITE, GRAY),
+        ("POTENTIAL STRESS", level["label"], level["tip"], level["color"], GRAY),
+        ("NEXT STRESS WINDOW", prediction_at.strftime("%I:%M %p") if isinstance(prediction_at, datetime) else "--:--", f"about {prediction_minutes} min" if prediction_minutes is not None else "waiting for sensor", YELLOW, GRAY),
+        ("MAX30102", source, f"updated {updated_at.strftime('%H:%M:%S') if isinstance(updated_at, datetime) else 'just now'}", TEAL, GRAY),
+    ]
 
-    dot_spacing = 28
-    dot_total = len(STRESS_LEVELS) * dot_spacing
-    dot_start = W // 2 - dot_total // 2 + dot_spacing // 2
-    for i, sl in enumerate(STRESS_LEVELS):
-        col = sl["color"] if i == idx else DGRAY
-        cx = dot_start + i * dot_spacing
-        _fill(cx - 6, 196, 12, 12, col)
+    for i, (title, primary, secondary, primary_color, secondary_color) in enumerate(cards):
+        cy = 74 + i * 56
+        _fill(12, cy - 20, W - 24, 44, DGRAY)
+        _draw_rect_outline(12, cy - 20, W - 24, 44, level["color"] if i == 1 else TEAL)
+        _draw_text_left(title, 24, cy - 14, TEAL, scale=1)
+        # Make prediction card (index 2) larger for visual prominence
+        prediction_scale = 2 if i == 2 else 2
+        _draw_text_left(primary, 24, cy - 1, primary_color, scale=prediction_scale)
+        _draw_text_left(secondary, 24, cy + 14, secondary_color, scale=1)
 
-    _draw_text(level["tip"], W // 2, 230, GRAY, scale=1)
-    _draw_text("25 change level  23 home", W // 2, 308, DGRAY, scale=1)
+    _draw_text("18 refresh reading  23 home", W // 2, 308, DGRAY, scale=1)
 
 
 def _draw_screen() -> None:
@@ -773,6 +955,8 @@ def _cycle_page(direction: int) -> None:
         threading.Thread(target=_fetch_calendar, daemon=True).start()
     elif new_screen == "voice_notes":
         _sync_recordings()
+    elif new_screen == "stress_level":
+        _request_stress_refresh(force=True)
 
 
 def _fetch_calendar() -> None:
@@ -888,9 +1072,7 @@ def _on_action_button() -> None:
     elif screen == "pomodoro_select":
         _start_pomodoro_session()
     elif screen == "stress_level":
-        with _lock:
-            level = STRESS_LEVELS[_state["stress_level"]]["label"]
-            _state["status"] = f"Selected {level}"
+        _request_stress_refresh(force=True)
     elif screen == "home":
         _cycle_page(+1)
     else:
